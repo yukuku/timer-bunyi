@@ -1,0 +1,78 @@
+name: Build and Release APK
+
+on:
+  push:
+    branches: [ "claude/android-timer-app-M9Wpo" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Generate signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore timer-bunyi-release.jks \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias timer-bunyi \
+            -storepass timerbunyi123 \
+            -keypass timerbunyi123 \
+            -dname "CN=Timer Bunyi, OU=App, O=yukuku, L=Jakarta, ST=Jakarta, C=ID"
+
+      - name: Sign APK
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          echo "Using apksigner: $APKSIGNER"
+          "$APKSIGNER" sign \
+            --ks timer-bunyi-release.jks \
+            --ks-pass pass:timerbunyi123 \
+            --key-pass pass:timerbunyi123 \
+            --ks-key-alias timer-bunyi \
+            --out app/build/outputs/apk/release/timer-bunyi-signed.apk \
+            app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Verify APK signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -1)
+          "$APKSIGNER" verify --verbose app/build/outputs/apk/release/timer-bunyi-signed.apk
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: "Timer Bunyi v1.0.${{ github.run_number }}"
+          body: |
+            ## Timer Bunyi APK
+
+            A 25-minute countdown timer for Android (minSdk 29 / Android 10+).
+
+            **Features:**
+            - 25-minute countdown with Compose UI
+            - Wakes screen and shows over lock screen at 1 minute remaining
+            - Alarm sound bypasses silent/DND mode (ALARM channel)
+            - Volume gradually increases from 0% → 100% over 60 seconds
+
+            **Install:** Enable "Install from unknown sources" in Settings, then tap the APK.
+
+            > Signed with a self-generated keystore — safe to install for personal use.
+          files: app/build/outputs/apk/release/timer-bunyi-signed.apk
+          draft: false
+          prerelease: false
