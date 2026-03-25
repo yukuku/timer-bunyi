@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Timer Bunyi</string>
+    <string name="timer_running">Timer running</string>
+    <string name="timer_channel_name">Timer</string>
+    <string name="alarm_channel_name">Alarm</string>
+    <string name="notification_title">Timer Bunyi</string>
+    <string name="alarm_notification_title">Time\'s up!</string>
+    <string name="alarm_notification_text">The 25-minute timer has finished.</string>
+</resources>
