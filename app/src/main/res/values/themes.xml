@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.TimerBunyi" parent="android:Theme.Material.NoTitleBar.Fullscreen">
+    <style name="Theme.TimerBunyi" parent="android:Theme.Material.NoActionBar.Fullscreen">
         <item name="android:windowBackground">@color/black</item>
         <item name="android:statusBarColor">@color/black</item>
         <item name="android:navigationBarColor">@color/black</item>
