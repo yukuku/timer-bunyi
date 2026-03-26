@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
@@ -30,26 +32,29 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
-import kotlin.math.roundToInt
 
 enum class Screen { TIMER, SETTINGS }
 
@@ -82,7 +87,6 @@ class MainActivity : ComponentActivity() {
         settings = SettingsStore.load(this)
         remainingMs = settings.timerDurationMs
 
-        // Show activity over lock screen and turn screen on
         setShowWhenLocked(true)
         setTurnScreenOn(true)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -210,11 +214,18 @@ fun SettingsScreen(
     settings: AppSettings,
     onBack: (AppSettings) -> Unit
 ) {
-    var durationSeconds by remember { mutableIntStateOf(settings.timerDurationSeconds) }
-    var wakeLeadSeconds by remember { mutableIntStateOf(settings.wakeLeadSeconds) }
+    var durMinText by remember { mutableStateOf((settings.timerDurationSeconds / 60).toString()) }
+    var durSecText by remember { mutableStateOf((settings.timerDurationSeconds % 60).toString()) }
+    var wakeMinText by remember { mutableStateOf((settings.wakeLeadSeconds / 60).toString()) }
+    var wakeSecText by remember { mutableStateOf((settings.wakeLeadSeconds % 60).toString()) }
 
-    val maxWakeLead = minOf(AppSettings.MAX_WAKE_LEAD_SECONDS, durationSeconds)
-    if (wakeLeadSeconds > maxWakeLead) wakeLeadSeconds = maxWakeLead
+    fun buildSettings(): AppSettings {
+        val durTotal = ((durMinText.toIntOrNull() ?: 0) * 60 + (durSecText.toIntOrNull() ?: 0))
+            .coerceIn(AppSettings.MIN_DURATION_SECONDS, AppSettings.MAX_DURATION_SECONDS)
+        val wakeTotal = ((wakeMinText.toIntOrNull() ?: 0) * 60 + (wakeSecText.toIntOrNull() ?: 0))
+            .coerceIn(AppSettings.MIN_WAKE_LEAD_SECONDS, minOf(AppSettings.MAX_WAKE_LEAD_SECONDS, durTotal))
+        return AppSettings(timerDurationSeconds = durTotal, wakeLeadSeconds = wakeTotal)
+    }
 
     Column(
         modifier = Modifier
@@ -226,9 +237,7 @@ fun SettingsScreen(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(bottom = 32.dp)
         ) {
-            IconButton(onClick = {
-                onBack(AppSettings(timerDurationSeconds = durationSeconds, wakeLeadSeconds = wakeLeadSeconds))
-            }) {
+            IconButton(onClick = { onBack(buildSettings()) }) {
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                     contentDescription = "Back",
@@ -243,53 +252,87 @@ fun SettingsScreen(
             )
         }
 
-        SettingSlider(
+        DurationField(
             label = "Timer Duration",
-            displayValue = formatDuration(durationSeconds),
-            value = durationSeconds.toFloat(),
-            onValueChange = { durationSeconds = it.roundToInt() },
-            valueRange = AppSettings.MIN_DURATION_SECONDS.toFloat()..AppSettings.MAX_DURATION_SECONDS.toFloat()
+            minuteValue = durMinText,
+            secondValue = durSecText,
+            onMinuteChange = { durMinText = it.filter { c -> c.isDigit() }.take(2) },
+            onSecondChange = { durSecText = it.filter { c -> c.isDigit() }.take(2) },
+            isLast = false
         )
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
-        SettingSlider(
+        DurationField(
             label = "Wake Screen Before Alarm",
-            displayValue = formatDuration(wakeLeadSeconds),
-            value = wakeLeadSeconds.toFloat(),
-            onValueChange = { wakeLeadSeconds = it.roundToInt() },
-            valueRange = AppSettings.MIN_WAKE_LEAD_SECONDS.toFloat()..maxWakeLead.toFloat()
+            minuteValue = wakeMinText,
+            secondValue = wakeSecText,
+            onMinuteChange = { wakeMinText = it.filter { c -> c.isDigit() }.take(2) },
+            onSecondChange = { wakeSecText = it.filter { c -> c.isDigit() }.take(2) },
+            isLast = true,
+            onDone = { onBack(buildSettings()) }
         )
     }
 }
 
 @Composable
-private fun SettingSlider(
+private fun DurationField(
     label: String,
-    displayValue: String,
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    valueRange: ClosedFloatingPointRange<Float>
+    minuteValue: String,
+    secondValue: String,
+    onMinuteChange: (String) -> Unit,
+    onSecondChange: (String) -> Unit,
+    isLast: Boolean,
+    onDone: (() -> Unit)? = null
 ) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = label, color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
-            Text(text = displayValue, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            valueRange = valueRange,
-            modifier = Modifier.fillMaxWidth(),
-            colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color(0xFF1B5E20),
-                inactiveTrackColor = Color.White.copy(alpha = 0.2f)
-            )
+    val focusManager = LocalFocusManager.current
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedBorderColor = Color.White,
+        unfocusedBorderColor = Color.White.copy(alpha = 0.4f),
+        focusedLabelColor = Color.White,
+        unfocusedLabelColor = Color.White.copy(alpha = 0.6f),
+        cursorColor = Color.White,
+        focusedTextColor = Color.White,
+        unfocusedTextColor = Color.White
+    )
+    val textStyle = TextStyle(fontSize = 28.sp, fontFamily = FontFamily.Monospace, color = Color.White)
+
+    Text(text = label, color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp)
+    Spacer(modifier = Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = minuteValue,
+            onValueChange = onMinuteChange,
+            modifier = Modifier.width(88.dp),
+            textStyle = textStyle,
+            suffix = { Text("m", color = Color.White.copy(alpha = 0.6f), fontSize = 16.sp) },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Next) }
+            ),
+            singleLine = true,
+            colors = fieldColors
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        OutlinedTextField(
+            value = secondValue,
+            onValueChange = onSecondChange,
+            modifier = Modifier.width(88.dp),
+            textStyle = textStyle,
+            suffix = { Text("s", color = Color.White.copy(alpha = 0.6f), fontSize = 16.sp) },
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Number,
+                imeAction = if (isLast) ImeAction.Done else ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(
+                onNext = { focusManager.moveFocus(FocusDirection.Next) },
+                onDone = { focusManager.clearFocus(); onDone?.invoke() }
+            ),
+            singleLine = true,
+            colors = fieldColors
         )
     }
 }
@@ -299,12 +342,4 @@ private fun formatTime(ms: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%02d:%02d".format(minutes, seconds)
-}
-
-private fun formatDuration(seconds: Int): String {
-    return when {
-        seconds < 60 -> "${seconds}s"
-        seconds % 60 == 0 -> "${seconds / 60}m"
-        else -> "${seconds / 60}m ${seconds % 60}s"
-    }
 }

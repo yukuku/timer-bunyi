@@ -44,7 +44,7 @@ class TimerService : Service() {
     private var mediaPlayer: MediaPlayer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentVolume = 0f
-    private var alarmStarted = false
+    private var screenWoken = false
 
     private val volumeHandler = Handler(Looper.getMainLooper())
     private val volumeRunnable = object : Runnable {
@@ -91,17 +91,16 @@ class TimerService : Service() {
                 updateNotification(millisUntilFinished)
                 broadcastTick(millisUntilFinished, running = true)
 
-                if (millisUntilFinished <= alarmStartMs && !alarmStarted) {
-                    alarmStarted = true
+                if (millisUntilFinished <= alarmStartMs && !screenWoken) {
+                    screenWoken = true
                     wakeScreen()
                     showAlarmNotification()
-                    startAlarmSound()
                 }
             }
 
             override fun onFinish() {
                 broadcastTick(0, running = false)
-                // Alarm keeps playing until user presses stop
+                startAlarmSound()
             }
         }.start()
     }
@@ -109,7 +108,7 @@ class TimerService : Service() {
     private fun stopTimer() {
         countDownTimer?.cancel()
         countDownTimer = null
-        alarmStarted = false
+        screenWoken = false
 
         volumeHandler.removeCallbacks(volumeRunnable)
 
@@ -139,7 +138,8 @@ class TimerService : Service() {
             PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
             "timerbunyi:alarm"
         )
-        wakeLock?.acquire(70_000L)
+        // Hold screen on for lead time + 10 minutes of ringing
+        wakeLock?.acquire(alarmStartMs + 10 * 60 * 1000L)
     }
 
     private fun startAlarmSound() {
@@ -226,7 +226,7 @@ class TimerService : Service() {
     }
 
     private fun updateNotification(remainingMs: Long) {
-        if (alarmStarted) return
+        if (screenWoken) return
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(FOREGROUND_NOTIF_ID, buildTimerNotification(remainingMs))
     }
@@ -253,21 +253,14 @@ class TimerService : Service() {
         }
         nm.createNotificationChannel(timerChannel)
 
-        // Alarm channel: uses USAGE_ALARM so it bypasses silent/DND
-        val alarmAudioAttributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
+        // Alarm channel: HIGH importance for full-screen intent; sound handled by MediaPlayer only
         val alarmChannel = NotificationChannel(
             ALARM_CHANNEL_ID,
             getString(R.string.alarm_channel_name),
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            setSound(
-                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
-                alarmAudioAttributes
-            )
-            enableVibration(true)
+            setSound(null, null)
+            enableVibration(false)
         }
         nm.createNotificationChannel(alarmChannel)
     }
