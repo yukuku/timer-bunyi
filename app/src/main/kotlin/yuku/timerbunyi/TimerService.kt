@@ -32,12 +32,13 @@ class TimerService : Service() {
         const val FOREGROUND_NOTIF_ID = 1
         const val ALARM_NOTIF_ID = 2
 
-        const val TIMER_DURATION_MS = 25 * 60 * 1000L
-        const val ALARM_START_MS = 60 * 1000L
         // Volume increases from 0f to 1f in steps of 0.05f every 3 seconds = 20 steps * 3s = 60s
         const val VOLUME_STEP = 0.05f
         const val VOLUME_INTERVAL_MS = 3000L
     }
+
+    private var timerDurationMs = AppSettings().timerDurationMs
+    private var alarmStartMs = AppSettings().wakeLeadMs
 
     private var countDownTimer: CountDownTimer? = null
     private var mediaPlayer: MediaPlayer? = null
@@ -79,14 +80,18 @@ class TimerService : Service() {
     private fun startTimer() {
         if (countDownTimer != null) return
 
-        startForeground(FOREGROUND_NOTIF_ID, buildTimerNotification(TIMER_DURATION_MS))
+        val settings = SettingsStore.load(this)
+        timerDurationMs = settings.timerDurationMs
+        alarmStartMs = settings.wakeLeadMs
 
-        countDownTimer = object : CountDownTimer(TIMER_DURATION_MS, 1000) {
+        startForeground(FOREGROUND_NOTIF_ID, buildTimerNotification(timerDurationMs))
+
+        countDownTimer = object : CountDownTimer(timerDurationMs, 1000) {
             override fun onTick(millisUntilFinished: Long) {
                 updateNotification(millisUntilFinished)
                 broadcastTick(millisUntilFinished, running = true)
 
-                if (millisUntilFinished <= ALARM_START_MS && !alarmStarted) {
+                if (millisUntilFinished <= alarmStartMs && !alarmStarted) {
                     alarmStarted = true
                     wakeScreen()
                     showAlarmNotification()
@@ -122,7 +127,7 @@ class TimerService : Service() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(ALARM_NOTIF_ID)
 
-        broadcastTick(TIMER_DURATION_MS, running = false)
+        broadcastTick(timerDurationMs, running = false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
