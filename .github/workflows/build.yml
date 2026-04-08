@@ -2,7 +2,7 @@ name: Build and Release APK
 
 on:
   push:
-    branches: [ "claude/android-timer-app-M9Wpo" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -69,16 +69,18 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: "Timer Bunyi v1.0.${{ github.run_number }}"
+          tag_name: v2.0.${{ github.run_number }}
+          name: "Timer Bunyi v2.0.${{ github.run_number }}"
           body: |
             ## Timer Bunyi APK
 
-            A 25-minute countdown timer for Android (minSdk 29 / Android 10+).
+            A configurable countdown timer for Android (minSdk 29 / Android 10+).
 
             **Features:**
-            - 25-minute countdown with Compose UI
-            - Wakes screen and shows over lock screen at 1 minute remaining
+            - Configurable countdown (15s–60min) with Compose UI
+            - Configurable wake lead time (5s–5min) before alarm
+            - Reliable AlarmManager-based timing with notification chronometer
+            - Wakes screen and shows over lock screen before alarm fires
             - Alarm sound bypasses silent/DND mode (ALARM channel)
             - Volume gradually increases from 0% → 100% over 60 seconds
 
