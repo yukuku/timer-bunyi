@@ -1,15 +1,13 @@
 package yuku.timerbunyi
 
-import android.Manifest
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.Manifest
+import android.content.pm.PackageManager
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -36,6 +34,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -54,7 +53,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 
 enum class Screen { TIMER, SETTINGS }
 
@@ -69,14 +69,6 @@ class MainActivity : ComponentActivity() {
     private var isRunning by mutableStateOf(false)
     private var currentScreen by mutableStateOf(Screen.TIMER)
 
-    private val tickReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            remainingMs = intent?.getLongExtra(TimerService.EXTRA_REMAINING_MS, settings.timerDurationMs)
-                ?: settings.timerDurationMs
-            isRunning = intent?.getBooleanExtra(TimerService.EXTRA_IS_RUNNING, false) ?: false
-        }
-    }
-
     private val requestNotificationPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* permission result handled silently */ }
@@ -85,7 +77,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         settings = SettingsStore.load(this)
-        remainingMs = settings.timerDurationMs
+        TimerService.loadState(this)
+        syncStateFromService()
 
         setShowWhenLocked(true)
         setTurnScreenOn(true)
@@ -100,6 +93,24 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
+            // Poll timer state when running
+            LaunchedEffect(isRunning) {
+                while (isRunning && isActive) {
+                    val running = TimerService.currentlyRunning
+                    val alarm = TimerService.alarmActive
+                    val endTime = TimerService.endTimeMs
+                    if (running && endTime > System.currentTimeMillis()) {
+                        remainingMs = endTime - System.currentTimeMillis()
+                    } else if (alarm) {
+                        remainingMs = 0L
+                    } else if (!running && !alarm) {
+                        isRunning = false
+                        remainingMs = settings.timerDurationMs
+                    }
+                    delay(250)
+                }
+            }
+
             when (currentScreen) {
                 Screen.TIMER -> TimerScreen(
                     remainingMs = remainingMs,
@@ -122,26 +133,40 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        LocalBroadcastManager.getInstance(this).registerReceiver(
-            tickReceiver,
-            IntentFilter(TimerService.BROADCAST_TICK)
-        )
+        syncStateFromService()
     }
 
-    override fun onPause() {
-        super.onPause()
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(tickReceiver)
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        syncStateFromService()
+    }
+
+    private fun syncStateFromService() {
+        val running = TimerService.currentlyRunning
+        val alarm = TimerService.alarmActive
+        val endTime = TimerService.endTimeMs
+        if (running && endTime > System.currentTimeMillis()) {
+            isRunning = true
+            remainingMs = endTime - System.currentTimeMillis()
+        } else if (alarm) {
+            isRunning = true
+            remainingMs = 0L
+        } else {
+            isRunning = false
+            remainingMs = settings.timerDurationMs
+        }
     }
 
     private fun toggleTimer() {
-        val action = if (isRunning) TimerService.ACTION_STOP else TimerService.ACTION_START
-        val intent = Intent(this, TimerService::class.java).apply { this.action = action }
-        if (!isRunning) {
-            startForegroundService(intent)
+        if (isRunning) {
+            isRunning = false
+            remainingMs = settings.timerDurationMs
+            startService(Intent(this, TimerService::class.java).apply { action = TimerService.ACTION_STOP })
+        } else {
+            startForegroundService(Intent(this, TimerService::class.java).apply { action = TimerService.ACTION_START })
             isRunning = true
             remainingMs = settings.timerDurationMs
-        } else {
-            startService(intent)
         }
     }
 }
@@ -226,6 +251,8 @@ fun SettingsScreen(
             .coerceIn(AppSettings.MIN_WAKE_LEAD_SECONDS, minOf(AppSettings.MAX_WAKE_LEAD_SECONDS, durTotal))
         return AppSettings(timerDurationSeconds = durTotal, wakeLeadSeconds = wakeTotal)
     }
+
+    BackHandler { onBack(buildSettings()) }
 
     Column(
         modifier = Modifier

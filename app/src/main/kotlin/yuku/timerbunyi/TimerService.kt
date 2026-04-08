@@ -1,46 +1,74 @@
 package yuku.timerbunyi
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
-import android.os.CountDownTimer
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 
 class TimerService : Service() {
 
     companion object {
         const val ACTION_START = "START"
         const val ACTION_STOP = "STOP"
-        const val BROADCAST_TICK = "yuku.timerbunyi.TICK"
-        const val EXTRA_REMAINING_MS = "remaining_ms"
-        const val EXTRA_IS_RUNNING = "is_running"
+        const val ACTION_WAKE = "WAKE"
+        const val ACTION_ALARM_FIRE = "ALARM_FIRE"
 
         const val TIMER_CHANNEL_ID = "timer_channel"
         const val ALARM_CHANNEL_ID = "alarm_channel"
         const val FOREGROUND_NOTIF_ID = 1
         const val ALARM_NOTIF_ID = 2
 
-        // Volume increases from 0f to 1f in steps of 0.05f every 3 seconds = 20 steps * 3s = 60s
         const val VOLUME_STEP = 0.05f
         const val VOLUME_INTERVAL_MS = 3000L
+
+        private const val PREF_NAME = "timer_state"
+        private const val PREF_END_TIME = "end_time_ms"
+        private const val PREF_RUNNING = "is_running"
+
+        private const val RC_WAKE = 100
+        private const val RC_ALARM = 101
+
+        @Volatile
+        var endTimeMs: Long = 0L
+            private set
+
+        @Volatile
+        var currentlyRunning: Boolean = false
+            private set
+
+        @Volatile
+        var alarmActive: Boolean = false
+            private set
+
+        fun loadState(context: Context) {
+            val prefs = context.getSharedPreferences(PREF_NAME, MODE_PRIVATE)
+            endTimeMs = prefs.getLong(PREF_END_TIME, 0L)
+            val wasRunning = prefs.getBoolean(PREF_RUNNING, false)
+            if (wasRunning && endTimeMs > System.currentTimeMillis()) {
+                currentlyRunning = true
+            } else {
+                currentlyRunning = false
+                endTimeMs = 0L
+            }
+        }
     }
 
     private var timerDurationMs = AppSettings().timerDurationMs
     private var alarmStartMs = AppSettings().wakeLeadMs
 
-    private var countDownTimer: CountDownTimer? = null
     private var mediaPlayer: MediaPlayer? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentVolume = 0f
@@ -66,6 +94,8 @@ class TimerService : Service() {
         when (intent?.action) {
             ACTION_START -> startTimer()
             ACTION_STOP -> stopTimer()
+            ACTION_WAKE -> handleWake()
+            ACTION_ALARM_FIRE -> handleAlarmFire()
         }
         return START_NOT_STICKY
     }
@@ -78,37 +108,94 @@ class TimerService : Service() {
     }
 
     private fun startTimer() {
-        if (countDownTimer != null) return
+        if (currentlyRunning || alarmActive) return
 
         val settings = SettingsStore.load(this)
         timerDurationMs = settings.timerDurationMs
         alarmStartMs = settings.wakeLeadMs
 
-        startForeground(FOREGROUND_NOTIF_ID, buildTimerNotification(timerDurationMs))
+        endTimeMs = System.currentTimeMillis() + timerDurationMs
+        currentlyRunning = true
+        alarmActive = false
+        saveState()
 
-        countDownTimer = object : CountDownTimer(timerDurationMs, 1000) {
-            override fun onTick(millisUntilFinished: Long) {
-                updateNotification(millisUntilFinished)
-                broadcastTick(millisUntilFinished, running = true)
+        startForeground(FOREGROUND_NOTIF_ID, buildTimerNotification())
+        scheduleAlarms()
+    }
 
-                if (millisUntilFinished <= alarmStartMs && !screenWoken) {
-                    screenWoken = true
-                    wakeScreen()
-                    showAlarmNotification()
-                }
-            }
+    private fun scheduleAlarms() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
 
-            override fun onFinish() {
-                broadcastTick(0, running = false)
-                startAlarmSound()
-            }
-        }.start()
+        val showIntent = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Schedule wake screen
+        val wakeTimeMs = endTimeMs - alarmStartMs
+        if (wakeTimeMs > System.currentTimeMillis()) {
+            val wakeIntent = Intent(this, TimerService::class.java).apply { action = ACTION_WAKE }
+            val wakePi = PendingIntent.getForegroundService(
+                this, RC_WAKE, wakeIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            am.setAlarmClock(AlarmManager.AlarmClockInfo(wakeTimeMs, showIntent), wakePi)
+        } else {
+            handleWake()
+        }
+
+        // Schedule alarm fire
+        val alarmIntent = Intent(this, TimerService::class.java).apply { action = ACTION_ALARM_FIRE }
+        val alarmPi = PendingIntent.getForegroundService(
+            this, RC_ALARM, alarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.setAlarmClock(AlarmManager.AlarmClockInfo(endTimeMs, showIntent), alarmPi)
+    }
+
+    private fun cancelAlarms() {
+        val am = getSystemService(ALARM_SERVICE) as AlarmManager
+
+        val wakeIntent = Intent(this, TimerService::class.java).apply { action = ACTION_WAKE }
+        val wakePi = PendingIntent.getForegroundService(
+            this, RC_WAKE, wakeIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.cancel(wakePi)
+
+        val alarmIntent = Intent(this, TimerService::class.java).apply { action = ACTION_ALARM_FIRE }
+        val alarmPi = PendingIntent.getForegroundService(
+            this, RC_ALARM, alarmIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.cancel(alarmPi)
+    }
+
+    private fun handleWake() {
+        if (screenWoken) return
+        screenWoken = true
+        wakeScreen()
+        showAlarmNotification()
+    }
+
+    private fun handleAlarmFire() {
+        if (!screenWoken) handleWake()
+        currentlyRunning = false
+        alarmActive = true
+        saveState()
+        startAlarmSound()
     }
 
     private fun stopTimer() {
-        countDownTimer?.cancel()
-        countDownTimer = null
+        cancelAlarms()
         screenWoken = false
+        currentlyRunning = false
+        alarmActive = false
+        endTimeMs = 0L
+        saveState()
 
         volumeHandler.removeCallbacks(volumeRunnable)
 
@@ -126,7 +213,6 @@ class TimerService : Service() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(ALARM_NOTIF_ID)
 
-        broadcastTick(timerDurationMs, running = false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -138,7 +224,6 @@ class TimerService : Service() {
             PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
             "timerbunyi:alarm"
         )
-        // Hold screen on for lead time + 10 minutes of ringing
         wakeLock?.acquire(alarmStartMs + 10 * 60 * 1000L)
     }
 
@@ -197,12 +282,13 @@ class TimerService : Service() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(ALARM_NOTIF_ID, notification)
 
-        // Update foreground notification to alarm one so it stays visible
         startForeground(FOREGROUND_NOTIF_ID, notification)
     }
 
-    private fun buildTimerNotification(remainingMs: Long): Notification {
-        val contentIntent = Intent(this, MainActivity::class.java)
+    private fun buildTimerNotification(): Notification {
+        val contentIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
         val contentPi = PendingIntent.getActivity(
             this, 0, contentIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -217,32 +303,26 @@ class TimerService : Service() {
         return NotificationCompat.Builder(this, TIMER_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
-            .setContentText(formatTime(remainingMs))
             .setContentIntent(contentPi)
             .addAction(0, "Stop", stopPi)
             .setOngoing(true)
             .setSilent(true)
+            .setWhen(endTimeMs)
+            .setUsesChronometer(true)
+            .setChronometerCountDown(true)
             .build()
     }
 
-    private fun updateNotification(remainingMs: Long) {
-        if (screenWoken) return
-        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(FOREGROUND_NOTIF_ID, buildTimerNotification(remainingMs))
-    }
-
-    private fun broadcastTick(remainingMs: Long, running: Boolean) {
-        val intent = Intent(BROADCAST_TICK).apply {
-            putExtra(EXTRA_REMAINING_MS, remainingMs)
-            putExtra(EXTRA_IS_RUNNING, running)
-        }
-        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    private fun saveState() {
+        getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit()
+            .putLong(PREF_END_TIME, endTimeMs)
+            .putBoolean(PREF_RUNNING, currentlyRunning)
+            .apply()
     }
 
     private fun createNotificationChannels() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
-        // Timer channel: silent countdown notification
         val timerChannel = NotificationChannel(
             TIMER_CHANNEL_ID,
             getString(R.string.timer_channel_name),
@@ -253,7 +333,6 @@ class TimerService : Service() {
         }
         nm.createNotificationChannel(timerChannel)
 
-        // Alarm channel: HIGH importance for full-screen intent; sound handled by MediaPlayer only
         val alarmChannel = NotificationChannel(
             ALARM_CHANNEL_ID,
             getString(R.string.alarm_channel_name),
