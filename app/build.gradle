@@ -11,8 +11,8 @@ android {
         applicationId "yuku.timerbunyi"
         minSdk 29
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "2.0.0"
     }
 
     buildTypes {
@@ -54,5 +54,5 @@ dependencies {
     implementation 'androidx.activity:activity-compose:1.8.2'
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
-    implementation 'androidx.localbroadcastmanager:localbroadcastmanager:1.1.0'
+
 }
